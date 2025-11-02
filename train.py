@@ -170,7 +170,7 @@ def train_epoch(model, dataloader, optimizer, scheduler, device, scaler,
 
             # Calculate losses
             stars_loss = stars_criterion(stars_logits, stars)
-            reply_loss = reply_criterion(reply_logits.squeeze(), needs_reply)
+            reply_loss = reply_criterion(reply_logits.squeeze(-1), needs_reply)
             star_reg_loss = stars_reg_criterion(
                 star_regression.squeeze(-1), stars_value
             )
@@ -240,7 +240,7 @@ def evaluate(model, dataloader, device, stars_reg_criterion):
 
             # Calculate losses
             stars_loss = stars_criterion(stars_logits, stars)
-            reply_loss = reply_criterion(reply_logits.squeeze(), needs_reply)
+            reply_loss = reply_criterion(reply_logits.squeeze(-1), needs_reply)
             star_reg_loss = stars_reg_criterion(
                 star_regression.squeeze(-1), stars_value
             )
@@ -251,7 +251,7 @@ def evaluate(model, dataloader, device, stars_reg_criterion):
 
             # Get predictions
             stars_preds = torch.argmax(stars_logits, dim=1)
-            reply_probs = torch.sigmoid(reply_logits.squeeze())
+            reply_probs = torch.sigmoid(reply_logits.squeeze(-1))
             reply_preds = (reply_probs > 0.5).long()
 
             all_stars_preds.extend(stars_preds.cpu().numpy())
