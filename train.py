@@ -271,7 +271,21 @@ def main(args):
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Load data from pre-split files
-    print("Loading data from pre-split files...")
+    print("=" * 80)
+    print("REVIEWGPT V2 TRAINING")
+    print("=" * 80)
+    print("\nV2 Improvements:")
+    print("  - BERT-base-multilingual-cased (110M params)")
+    print("  - max_length: 256 tokens")
+    print("  - Deeper classification heads (3 layers)")
+    print("  - Mean pooling")
+    print("  - Class weights for balanced training")
+    print("  - Gradient accumulation (effective batch = 32)")
+    print("  - Mixed precision training (FP16)")
+    print("  - Per-class metrics")
+    print("=" * 80)
+
+    print("\nLoading data from pre-split files...")
     train_df = pd.read_csv('reviews-train.csv')
     val_df = pd.read_csv('reviews-validate.csv')
     test_df = pd.read_csv('reviews-test.csv')
@@ -285,6 +299,24 @@ def main(args):
     print(val_df['stars'].value_counts().sort_index())
     print(f"\nTest set stars distribution:")
     print(test_df['stars'].value_counts().sort_index())
+
+    # V2: Compute class weights for balanced training
+    print("\n" + "=" * 80)
+    print("Computing class weights for balanced training...")
+    print("=" * 80)
+    class_weights = compute_class_weight(
+        'balanced',
+        classes=np.unique(train_df['stars']),
+        y=train_df['stars']
+    )
+    # Convert to 0-indexed for model (stars are 1-5, model uses 0-4)
+    class_weights_tensor = torch.FloatTensor(class_weights)
+    print(f"Class weights: {class_weights_tensor}")
+    print(f"  1 star: {class_weights[0]:.3f}")
+    print(f"  2 star: {class_weights[1]:.3f}")
+    print(f"  3 star: {class_weights[2]:.3f}")
+    print(f"  4 star: {class_weights[3]:.3f}")
+    print(f"  5 star: {class_weights[4]:.3f}")
 
     # Initialize tokenizer
     print(f"Loading tokenizer: {args.model_name}")
@@ -321,7 +353,7 @@ def main(args):
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size)
 
     # Initialize model
-    print(f"Initializing model: {args.model_name}")
+    print(f"\nInitializing model: {args.model_name}")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
@@ -352,6 +384,10 @@ def main(args):
     patience_counter = 0
 
     print("\nStarting training...")
+    print(f"Effective batch size: {args.batch_size * args.accumulation_steps}")
+    print(f"Total steps: {total_steps}")
+    print(f"Warmup steps: {warmup_steps}\n")
+
     for epoch in range(args.num_epochs):
         print(f"\n{'='*80}")
         print(f"Epoch {epoch + 1}/{args.num_epochs}")
@@ -370,6 +406,12 @@ def main(args):
 
         print(f"\nValidation Metrics:")
         print(f"  Stars - Accuracy: {val_metrics['stars']['accuracy']:.4f}, MAE: {val_metrics['stars']['mae']:.4f}")
+
+        # V2: Print per-class accuracy
+        print(f"  Per-class accuracy:")
+        for star, acc in val_metrics['stars']['per_class_accuracy'].items():
+            print(f"    {star} star: {acc:.4f}")
+
         print(f"  Needs Reply - F1: {val_metrics['needs_reply']['f1']:.4f}, ROC-AUC: {val_metrics['needs_reply']['roc_auc']:.4f}")
 
         # Early stopping based on needs_reply F1 score
@@ -411,6 +453,12 @@ def main(args):
     print(f"\nStar Rating:")
     print(f"  Accuracy: {test_metrics['stars']['accuracy']:.4f}")
     print(f"  MAE: {test_metrics['stars']['mae']:.4f}")
+
+    # V2: Print per-class accuracy
+    print(f"\n  Per-class accuracy:")
+    for star, acc in test_metrics['stars']['per_class_accuracy'].items():
+        print(f"    {star} star: {acc:.4f}")
+
     print(f"\nNeeds Reply:")
     print(f"  Accuracy: {test_metrics['needs_reply']['accuracy']:.4f}")
     print(f"  Precision: {test_metrics['needs_reply']['precision']:.4f}")
