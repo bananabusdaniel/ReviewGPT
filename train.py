@@ -120,43 +120,56 @@ class ReviewClassifier(nn.Module):
         return stars_logits, reply_logits
 
 
-def train_epoch(model, dataloader, optimizer, scheduler, device, stars_weight=1.0, reply_weight=1.0):
-    """Train for one epoch."""
+def train_epoch(model, dataloader, optimizer, scheduler, device, scaler,
+                stars_criterion, reply_criterion, accumulation_steps=2,
+                stars_weight=1.0, reply_weight=1.0):
+    """Train for one epoch with gradient accumulation and mixed precision.
+
+    V2 Improvements:
+    - Gradient accumulation (effective batch size = batch_size * accumulation_steps)
+    - Mixed precision training (FP16) for faster training
+    - Class-weighted loss functions passed as parameters
+    """
     model.train()
 
     total_loss = 0
-    stars_criterion = nn.CrossEntropyLoss()
-    reply_criterion = nn.BCEWithLogitsLoss()
-
     progress_bar = tqdm(dataloader, desc="Training")
 
-    for batch in progress_bar:
-        optimizer.zero_grad()
-
+    for batch_idx, batch in enumerate(progress_bar):
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
         stars = batch['stars'].to(device)
         needs_reply = batch['needs_reply'].to(device)
 
-        # Forward pass
-        stars_logits, reply_logits = model(input_ids, attention_mask)
+        # V2: Mixed precision training
+        with autocast():
+            # Forward pass
+            stars_logits, reply_logits = model(input_ids, attention_mask)
 
-        # Calculate losses
-        stars_loss = stars_criterion(stars_logits, stars)
-        reply_loss = reply_criterion(reply_logits.squeeze(), needs_reply)
+            # Calculate losses
+            stars_loss = stars_criterion(stars_logits, stars)
+            reply_loss = reply_criterion(reply_logits.squeeze(), needs_reply)
 
-        # Combined loss
-        loss = stars_weight * stars_loss + reply_weight * reply_loss
+            # Combined loss
+            loss = stars_weight * stars_loss + reply_weight * reply_loss
 
-        # Backward pass
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            # V2: Scale loss for gradient accumulation
+            loss = loss / accumulation_steps
 
-        optimizer.step()
-        scheduler.step()
+        # Backward pass with gradient scaling
+        scaler.scale(loss).backward()
 
-        total_loss += loss.item()
-        progress_bar.set_postfix({'loss': loss.item()})
+        # V2: Gradient accumulation - only update every N steps
+        if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == len(dataloader):
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
+            optimizer.zero_grad()
+
+        total_loss += loss.item() * accumulation_steps
+        progress_bar.set_postfix({'loss': loss.item() * accumulation_steps})
 
     return total_loss / len(dataloader)
 
