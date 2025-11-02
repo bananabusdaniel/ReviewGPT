@@ -1,20 +1,22 @@
 """
-Training script for ReviewGPT multi-task classification model V2.
-Uses BERT-base-multilingual-cased with two classification heads for:
-1. Star rating prediction (1-5)
-2. Needs reply prediction (binary)
+Training script for ReviewGPT multi-task classification model V2.1.
+Uses DistilBERT-base-multilingual-cased with three heads:
+1. Star rating prediction (1-5) - classification
+2. Star rating prediction (1-5) - regression (ordinal constraint)
+3. Needs reply prediction (binary)
 
-V2 Improvements:
-- Upgraded to BERT-base (110M params vs DistilBERT 66M params)
-- Increased max_length to 256 (from 128)
-- Deeper classification heads (3 layers vs 2)
-- Mean pooling instead of [CLS] token only
-- Class weights for balanced training
-- Gradient accumulation for larger effective batch size
-- Mixed precision training (FP16)
-- Per-class metrics for better analysis
-- More epochs with longer patience
-- Auxiliary star regression head to penalize ordinal mispredictions
+V2.1 Improvements (Best of V1 + V2):
+- Back to DistilBERT (66M params) - faster, less overfitting than BERT-base
+- Ordinal regression head (from V2) with stronger weight (0.8 vs 0.5)
+- Mean pooling instead of [CLS] token only (from V2)
+- Deeper classification heads (3 layers, from V2)
+- Higher dropout (0.35 vs V2's 0.2) to combat overfitting
+- Manual class weight boost for 3-star reviews (2.0x)
+- Combined metric early stopping (0.6×star_acc + 0.4×reply_f1)
+- Gradient accumulation for larger effective batch size (from V2)
+- Mixed precision training (FP16, from V2)
+- Per-class metrics for better analysis (from V2)
+- Optimized max_length (128 tokens, back to V1)
 """
 
 import argparse
@@ -72,15 +74,16 @@ class ReviewDataset(Dataset):
 
 
 class ReviewClassifier(nn.Module):
-    """Multi-task classifier with two heads on BERT-base-multilingual-cased.
+    """Multi-task classifier with three heads on DistilBERT-base-multilingual-cased.
 
-    V2 Improvements:
+    V2.1 Improvements:
     - Deeper classification heads (3 layers instead of 2)
     - Mean pooling instead of just [CLS] token
-    - Reduced dropout (0.2 vs 0.3) for more capacity
+    - Higher dropout (0.35 vs V2's 0.2) to combat overfitting
+    - Ordinal regression head for star rating proximity
     """
 
-    def __init__(self, model_name="bert-base-multilingual-cased", dropout=0.2):
+    def __init__(self, model_name="distilbert-base-multilingual-cased", dropout=0.35):
         super().__init__()
         self.bert = AutoModel.from_pretrained(model_name)
         hidden = self.bert.config.hidden_size
@@ -314,18 +317,20 @@ def main(args):
 
     # Load data from pre-split files
     print("=" * 80)
-    print("REVIEWGPT V2 TRAINING")
+    print("REVIEWGPT V2.1 TRAINING")
     print("=" * 80)
-    print("\nV2 Improvements:")
-    print("  - BERT-base-multilingual-cased (110M params)")
-    print("  - max_length: 256 tokens")
+    print("\nV2.1 Improvements (Best of V1 + V2):")
+    print("  - DistilBERT-base-multilingual-cased (66M params)")
+    print("  - max_length: 128 tokens")
+    print("  - Dropout: 0.35 (combat overfitting)")
+    print("  - Ordinal regression head (weight: 0.8)")
+    print("  - Manual 3-star class weight boost (2.0x)")
+    print("  - Combined metric early stopping")
     print("  - Deeper classification heads (3 layers)")
     print("  - Mean pooling")
-    print("  - Class weights for balanced training")
     print("  - Gradient accumulation (effective batch = 32)")
     print("  - Mixed precision training (FP16)")
     print("  - Per-class metrics")
-    print("  - Auxiliary star regression head")
     print("=" * 80)
 
     print("\nLoading data from pre-split files...")
@@ -343,21 +348,27 @@ def main(args):
     print(f"\nTest set stars distribution:")
     print(test_df['stars'].value_counts().sort_index())
 
-    # V2: Compute class weights for balanced training
+    # V2.1: Manual class weights with heavy 3-star boost
     print("\n" + "=" * 80)
     print("Computing class weights for balanced training...")
     print("=" * 80)
-    class_weights = compute_class_weight(
+
+    # First compute sklearn balanced weights as reference
+    sklearn_weights = compute_class_weight(
         'balanced',
         classes=np.unique(train_df['stars']),
         y=train_df['stars']
     )
-    # Convert to 0-indexed for model (stars are 1-5, model uses 0-4)
+    print(f"sklearn balanced weights: {sklearn_weights}")
+
+    # V2.1: Manual override with 2x boost for 3-star (most problematic class)
+    # 3-star got only 25.8% accuracy in V2 despite 1.23x weight
+    class_weights = np.array([0.9, 1.0, 2.0, 0.9, 0.9])  # 2.0x for 3★
+    print(f"\nV2.1 Manual class weights (2x boost for 3-star):")
     class_weights_tensor = torch.FloatTensor(class_weights)
-    print(f"Class weights: {class_weights_tensor}")
     print(f"  1 star: {class_weights[0]:.3f}")
     print(f"  2 star: {class_weights[1]:.3f}")
-    print(f"  3 star: {class_weights[2]:.3f}")
+    print(f"  3 star: {class_weights[2]:.3f} ← 2x boost!")
     print(f"  4 star: {class_weights[3]:.3f}")
     print(f"  5 star: {class_weights[4]:.3f}")
 
@@ -423,14 +434,16 @@ def main(args):
     # V2: Initialize gradient scaler for mixed precision
     scaler = GradScaler()
 
-    # Training loop
+    # Training loop with V2.1 combined metric early stopping
+    best_combined_metric = 0
     best_val_f1 = 0
     patience_counter = 0
 
     print("\nStarting training...")
     print(f"Effective batch size: {args.batch_size * args.accumulation_steps}")
     print(f"Total steps: {total_steps}")
-    print(f"Warmup steps: {warmup_steps}\n")
+    print(f"Warmup steps: {warmup_steps}")
+    print(f"Early stopping: Combined metric (0.6 × star_acc + 0.4 × reply_f1)\n")
 
     for epoch in range(args.num_epochs):
         print(f"\n{'='*80}")
@@ -461,26 +474,34 @@ def main(args):
 
         print(f"  Needs Reply - F1: {val_metrics['needs_reply']['f1']:.4f}, ROC-AUC: {val_metrics['needs_reply']['roc_auc']:.4f}")
 
-        # Early stopping based on needs_reply F1 score
-        current_f1 = val_metrics['needs_reply']['f1']
-        if current_f1 > best_val_f1:
-            best_val_f1 = current_f1
+        # V2.1: Early stopping based on COMBINED metric (star accuracy + reply F1)
+        # This fixes V2's issue where it optimized only for needs_reply, ignoring star accuracy
+        star_acc = val_metrics['stars']['accuracy']
+        reply_f1 = val_metrics['needs_reply']['f1']
+        combined_metric = 0.6 * star_acc + 0.4 * reply_f1  # Weight stars more heavily
+
+        print(f"\nCombined Metric: {combined_metric:.4f} (0.6×{star_acc:.4f} + 0.4×{reply_f1:.4f})")
+
+        if combined_metric > best_combined_metric:
+            best_combined_metric = combined_metric
+            best_val_f1 = reply_f1  # Keep for logging
             patience_counter = 0
 
             # Save best model
-            print(f"New best F1 score: {best_val_f1:.4f}. Saving model...")
+            print(f"✓ New best combined metric: {best_combined_metric:.4f}. Saving model...")
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_metrics': val_metrics,
+                'combined_metric': combined_metric,
             }, os.path.join(args.output_dir, 'model.pt'))
 
             # Save tokenizer
             tokenizer.save_pretrained(args.output_dir)
         else:
             patience_counter += 1
-            print(f"No improvement. Patience: {patience_counter}/{args.patience}")
+            print(f"✗ No improvement. Patience: {patience_counter}/{args.patience}")
 
             if patience_counter >= args.patience:
                 print("Early stopping triggered!")
@@ -558,30 +579,30 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='Train ReviewGPT V2 classifier with BERT-base',
+        description='Train ReviewGPT V2.1 classifier with DistilBERT',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
 
     parser.add_argument('--output_dir', type=str, default='artifacts',
                         help='Directory to save model and metrics')
-    parser.add_argument('--model_name', type=str, default='bert-base-multilingual-cased',
-                        help='Pretrained model name (V2 uses BERT-base)')
-    parser.add_argument('--max_length', type=int, default=256,
-                        help='Maximum sequence length (V2: 256 vs V1: 128)')
+    parser.add_argument('--model_name', type=str, default='distilbert-base-multilingual-cased',
+                        help='Pretrained model name (V2.1 uses DistilBERT)')
+    parser.add_argument('--max_length', type=int, default=128,
+                        help='Maximum sequence length (V2.1: 128 tokens)')
     parser.add_argument('--batch_size', type=int, default=16,
                         help='Batch size per GPU')
     parser.add_argument('--accumulation_steps', type=int, default=2,
                         help='Gradient accumulation steps (effective batch = batch_size * accumulation_steps)')
     parser.add_argument('--num_epochs', type=int, default=10,
-                        help='Number of epochs (V2: 10 vs V1: 5)')
+                        help='Number of epochs')
     parser.add_argument('--learning_rate', type=float, default=3e-5,
-                        help='Learning rate (V2: 3e-5 vs V1: 2e-5)')
-    parser.add_argument('--dropout', type=float, default=0.2,
-                        help='Dropout rate (V2: 0.2 vs V1: 0.3)')
+                        help='Learning rate')
+    parser.add_argument('--dropout', type=float, default=0.35,
+                        help='Dropout rate (V2.1: 0.35 to combat overfitting)')
     parser.add_argument('--patience', type=int, default=5,
-                        help='Early stopping patience (V2: 5 vs V1: 3)')
-    parser.add_argument('--stars_reg_weight', type=float, default=0.5,
-                        help='Weight for the star regression loss to emphasize ordinal consistency')
+                        help='Early stopping patience')
+    parser.add_argument('--stars_reg_weight', type=float, default=0.8,
+                        help='Weight for ordinal regression loss (V2.1: 0.8 for stronger constraint)')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')
 
