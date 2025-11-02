@@ -331,7 +331,7 @@ def main(args):
     print("Evaluating best model on test set...")
     print(f"{'='*80}")
 
-    checkpoint = torch.load(os.path.join(args.output_dir, 'model.pt'))
+    checkpoint = torch.load(os.path.join(args.output_dir, 'model.pt'), weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
 
     test_metrics, conf_matrix = evaluate(model, test_loader, device)
