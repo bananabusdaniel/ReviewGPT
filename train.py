@@ -14,6 +14,7 @@ V2 Improvements:
 - Mixed precision training (FP16)
 - Per-class metrics for better analysis
 - More epochs with longer patience
+- Auxiliary star regression head to penalize ordinal mispredictions
 """
 
 import argparse
@@ -64,8 +65,9 @@ class ReviewDataset(Dataset):
         return {
             'input_ids': encoding['input_ids'].flatten(),
             'attention_mask': encoding['attention_mask'].flatten(),
-            'stars': torch.tensor(self.stars[idx] - 1, dtype=torch.long),  # 0-indexed
-            'needs_reply': torch.tensor(self.needs_reply[idx], dtype=torch.float)
+            'stars': torch.tensor(self.stars[idx] - 1, dtype=torch.long),  # 0-indexed for classification
+            'needs_reply': torch.tensor(self.needs_reply[idx], dtype=torch.float),
+            'stars_value': torch.tensor(self.stars[idx], dtype=torch.float)  # retain ordinal value 1-5
         }
 
 
@@ -93,6 +95,15 @@ class ReviewClassifier(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden // 4, 5)
+        )
+
+        # Star regression head to preserve ordinal relationships
+        self.star_reg_head = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(hidden, hidden // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden // 2, 1)
         )
 
         # Needs reply head (binary classification) - DEEPER
@@ -124,13 +135,15 @@ class ReviewClassifier(nn.Module):
         # Get predictions from both heads
         stars_logits = self.star_head(pooled)
         reply_logits = self.reply_head(pooled)
+        star_regression = self.star_reg_head(pooled)
 
-        return stars_logits, reply_logits
+        return stars_logits, reply_logits, star_regression
 
 
 def train_epoch(model, dataloader, optimizer, scheduler, device, scaler,
-                stars_criterion, reply_criterion, accumulation_steps=2,
-                stars_weight=1.0, reply_weight=1.0):
+                stars_criterion, reply_criterion, stars_reg_criterion,
+                accumulation_steps=2, stars_weight=1.0, reply_weight=1.0,
+                stars_reg_weight=0.5):
     """Train for one epoch with gradient accumulation and mixed precision.
 
     V2 Improvements:
@@ -147,19 +160,27 @@ def train_epoch(model, dataloader, optimizer, scheduler, device, scaler,
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
         stars = batch['stars'].to(device)
+        stars_value = batch['stars_value'].to(device)
         needs_reply = batch['needs_reply'].to(device)
 
         # V2: Mixed precision training
         with autocast():
             # Forward pass
-            stars_logits, reply_logits = model(input_ids, attention_mask)
+            stars_logits, reply_logits, star_regression = model(input_ids, attention_mask)
 
             # Calculate losses
             stars_loss = stars_criterion(stars_logits, stars)
             reply_loss = reply_criterion(reply_logits.squeeze(), needs_reply)
+            star_reg_loss = stars_reg_criterion(
+                star_regression.squeeze(-1), stars_value
+            )
 
             # Combined loss
-            loss = stars_weight * stars_loss + reply_weight * reply_loss
+            loss = (
+                stars_weight * stars_loss
+                + reply_weight * reply_loss
+                + stars_reg_weight * star_reg_loss
+            )
 
             # V2: Scale loss for gradient accumulation
             loss = loss / accumulation_steps
@@ -177,12 +198,15 @@ def train_epoch(model, dataloader, optimizer, scheduler, device, scaler,
             optimizer.zero_grad()
 
         total_loss += loss.item() * accumulation_steps
-        progress_bar.set_postfix({'loss': loss.item() * accumulation_steps})
+        progress_bar.set_postfix({
+            'loss': loss.item() * accumulation_steps,
+            'star_reg': star_reg_loss.item()
+        })
 
     return total_loss / len(dataloader)
 
 
-def evaluate(model, dataloader, device):
+def evaluate(model, dataloader, device, stars_reg_criterion):
     """Evaluate the model with per-class metrics.
 
     V2 Improvement: Added per-class accuracy for star ratings
@@ -194,9 +218,12 @@ def evaluate(model, dataloader, device):
     all_reply_preds = []
     all_reply_probs = []
     all_reply_labels = []
+    all_star_reg_preds = []
+    all_star_reg_labels = []
 
     stars_criterion = nn.CrossEntropyLoss()
     reply_criterion = nn.BCEWithLogitsLoss()
+    total_star_reg_loss = 0
 
     total_stars_loss = 0
     total_reply_loss = 0
@@ -206,16 +233,21 @@ def evaluate(model, dataloader, device):
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             stars = batch['stars'].to(device)
+            stars_value = batch['stars_value'].to(device)
             needs_reply = batch['needs_reply'].to(device)
 
-            stars_logits, reply_logits = model(input_ids, attention_mask)
+            stars_logits, reply_logits, star_regression = model(input_ids, attention_mask)
 
             # Calculate losses
             stars_loss = stars_criterion(stars_logits, stars)
             reply_loss = reply_criterion(reply_logits.squeeze(), needs_reply)
+            star_reg_loss = stars_reg_criterion(
+                star_regression.squeeze(-1), stars_value
+            )
 
             total_stars_loss += stars_loss.item()
             total_reply_loss += reply_loss.item()
+            total_star_reg_loss += star_reg_loss.item()
 
             # Get predictions
             stars_preds = torch.argmax(stars_logits, dim=1)
@@ -227,10 +259,15 @@ def evaluate(model, dataloader, device):
             all_reply_preds.extend(reply_preds.cpu().numpy())
             all_reply_probs.extend(reply_probs.cpu().numpy())
             all_reply_labels.extend(needs_reply.cpu().numpy())
+            star_regression_clamped = torch.clamp(star_regression.squeeze(-1), 1.0, 5.0)
+            all_star_reg_preds.extend(star_regression_clamped.cpu().numpy())
+            all_star_reg_labels.extend(stars_value.cpu().numpy())
 
     # Calculate metrics
     stars_preds_original = np.array(all_stars_preds) + 1  # Convert back to 1-5
     stars_labels_original = np.array(all_stars_labels) + 1
+    star_reg_preds = np.array(all_star_reg_preds)
+    star_reg_labels = np.array(all_star_reg_labels)
 
     # V2: Calculate per-class accuracy
     per_class_accuracy = {}
@@ -247,7 +284,12 @@ def evaluate(model, dataloader, device):
             'accuracy': accuracy_score(stars_labels_original, stars_preds_original),
             'mae': mean_absolute_error(stars_labels_original, stars_preds_original),
             'loss': total_stars_loss / len(dataloader),
-            'per_class_accuracy': per_class_accuracy  # V2: New metric
+            'per_class_accuracy': per_class_accuracy,  # V2: New metric
+            'regression': {
+                'mae': mean_absolute_error(star_reg_labels, star_reg_preds) if len(star_reg_preds) else None,
+                'rmse': np.sqrt(np.mean((star_reg_labels - star_reg_preds) ** 2)) if len(star_reg_preds) else None,
+                'loss': total_star_reg_loss / len(dataloader)
+            }
         },
         'needs_reply': {
             'accuracy': accuracy_score(all_reply_labels, all_reply_preds),
@@ -283,6 +325,7 @@ def main(args):
     print("  - Gradient accumulation (effective batch = 32)")
     print("  - Mixed precision training (FP16)")
     print("  - Per-class metrics")
+    print("  - Auxiliary star regression head")
     print("=" * 80)
 
     print("\nLoading data from pre-split files...")
@@ -363,6 +406,7 @@ def main(args):
     # V2: Initialize loss functions with class weights
     stars_criterion = nn.CrossEntropyLoss(weight=class_weights_tensor.to(device))
     reply_criterion = nn.BCEWithLogitsLoss()
+    stars_reg_criterion = nn.SmoothL1Loss()
 
     # Initialize optimizer and scheduler
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=0.01)
@@ -396,16 +440,19 @@ def main(args):
         # Train with V2 improvements
         train_loss = train_epoch(
             model, train_loader, optimizer, scheduler, device, scaler,
-            stars_criterion, reply_criterion,
-            accumulation_steps=args.accumulation_steps
+            stars_criterion, reply_criterion, stars_reg_criterion,
+            accumulation_steps=args.accumulation_steps,
+            stars_reg_weight=args.stars_reg_weight
         )
         print(f"Average training loss: {train_loss:.4f}")
 
         # Validate
-        val_metrics, _ = evaluate(model, val_loader, device)
+        val_metrics, _ = evaluate(model, val_loader, device, stars_reg_criterion)
 
         print(f"\nValidation Metrics:")
         print(f"  Stars - Accuracy: {val_metrics['stars']['accuracy']:.4f}, MAE: {val_metrics['stars']['mae']:.4f}")
+        print(f"  Stars Regression - MAE: {val_metrics['stars']['regression']['mae']:.4f}, "
+              f"RMSE: {val_metrics['stars']['regression']['rmse']:.4f}")
 
         # V2: Print per-class accuracy
         print(f"  Per-class accuracy:")
@@ -447,12 +494,14 @@ def main(args):
     checkpoint = torch.load(os.path.join(args.output_dir, 'model.pt'), weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
 
-    test_metrics, conf_matrix = evaluate(model, test_loader, device)
+    test_metrics, conf_matrix = evaluate(model, test_loader, device, stars_reg_criterion)
 
     print(f"\nTest Metrics:")
     print(f"\nStar Rating:")
     print(f"  Accuracy: {test_metrics['stars']['accuracy']:.4f}")
     print(f"  MAE: {test_metrics['stars']['mae']:.4f}")
+    print(f"  Regression MAE: {test_metrics['stars']['regression']['mae']:.4f}")
+    print(f"  Regression RMSE: {test_metrics['stars']['regression']['rmse']:.4f}")
 
     # V2: Print per-class accuracy
     print(f"\n  Per-class accuracy:")
@@ -471,12 +520,24 @@ def main(args):
 
     # Save metrics
     # V2: Handle per_class_accuracy separately as it's a dict
-    stars_metrics = {k: (float(v) if not isinstance(v, dict) else v)
-                     for k, v in test_metrics['stars'].items()}
+    stars_metrics = {}
+    for k, v in test_metrics['stars'].items():
+        if isinstance(v, dict):
+            stars_metrics[k] = v
+        else:
+            stars_metrics[k] = float(v)
+
     # Convert per_class_accuracy values to float
-    if 'per_class_accuracy' in stars_metrics:
+    if 'per_class_accuracy' in stars_metrics and stars_metrics['per_class_accuracy'] is not None:
         stars_metrics['per_class_accuracy'] = {
             int(k): float(v) for k, v in stars_metrics['per_class_accuracy'].items()
+        }
+
+    # Convert regression metrics to float
+    if 'regression' in stars_metrics and stars_metrics['regression'] is not None:
+        stars_metrics['regression'] = {
+            k: (float(v) if v is not None else None)
+            for k, v in stars_metrics['regression'].items()
         }
 
     metrics_output = {
@@ -519,6 +580,8 @@ if __name__ == '__main__':
                         help='Dropout rate (V2: 0.2 vs V1: 0.3)')
     parser.add_argument('--patience', type=int, default=5,
                         help='Early stopping patience (V2: 5 vs V1: 3)')
+    parser.add_argument('--stars_reg_weight', type=float, default=0.5,
+                        help='Weight for the star regression loss to emphasize ordinal consistency')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')
 
