@@ -103,8 +103,15 @@ class ReviewClassifier(nn.Module):
         # Get BERT outputs
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
 
-        # Use [CLS] token representation
-        pooled = outputs.last_hidden_state[:, 0]
+        # V2: Use MEAN POOLING instead of just [CLS] token
+        # Mean pooling over all tokens (excluding padding)
+        token_embeddings = outputs.last_hidden_state
+
+        # Mask out padding tokens
+        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+        sum_embeddings = torch.sum(token_embeddings * input_mask_expanded, 1)
+        sum_mask = torch.clamp(input_mask_expanded.sum(1), min=1e-9)
+        pooled = sum_embeddings / sum_mask
 
         # Get predictions from both heads
         stars_logits = self.star_head(pooled)
