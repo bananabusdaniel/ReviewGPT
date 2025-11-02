@@ -1,14 +1,10 @@
 """
-Training script for ReviewGPT V1+ (Simple & Effective).
+Training script for ReviewGPT V1.
 Uses DistilBERT-base-multilingual-cased with two classification heads:
 1. Star rating prediction (1-5)
 2. Needs reply prediction (binary)
 
-V1+ Improvements over V1:
-- Class weights for balanced training
-- Max length increased to 256 tokens (from 128)
-
-That's it. Simplicity wins.
+Simple baseline implementation.
 """
 
 import argparse
@@ -22,7 +18,6 @@ import torch.nn as nn
 from sklearn.metrics import (accuracy_score, confusion_matrix, f1_score,
                               mean_absolute_error, precision_recall_fscore_support,
                               roc_auc_score)
-from sklearn.utils.class_weight import compute_class_weight
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from transformers import (AutoModel, AutoTokenizer, get_linear_schedule_with_warmup)
@@ -31,7 +26,7 @@ from transformers import (AutoModel, AutoTokenizer, get_linear_schedule_with_war
 class ReviewDataset(Dataset):
     """PyTorch Dataset for app reviews."""
 
-    def __init__(self, texts, stars, needs_reply, tokenizer, max_length=256):
+    def __init__(self, texts, stars, needs_reply, tokenizer, max_length=128):
         self.texts = texts
         self.stars = stars
         self.needs_reply = needs_reply
@@ -206,12 +201,11 @@ def main(args):
     os.makedirs(args.output_dir, exist_ok=True)
 
     print("=" * 80)
-    print("REVIEWGPT V1+ TRAINING")
+    print("REVIEWGPT V1 TRAINING")
     print("=" * 80)
-    print("\nV1+ (Simple & Effective):")
+    print("\nV1 (Baseline):")
     print("  - DistilBERT-base-multilingual-cased (66M params)")
-    print("  - Max length: 256 tokens")
-    print("  - Class weights for balanced training")
+    print("  - Max length: 128 tokens")
     print("  - Simple 2-layer heads")
     print("  - [CLS] token pooling")
     print("=" * 80)
@@ -222,16 +216,6 @@ def main(args):
     val_df = pd.read_csv('reviews-validate.csv')
     test_df = pd.read_csv('reviews-test.csv')
     print(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
-
-    # Compute class weights
-    print("\nComputing class weights...")
-    class_weights = compute_class_weight(
-        'balanced',
-        classes=np.unique(train_df['stars']),
-        y=train_df['stars']
-    )
-    class_weights_tensor = torch.FloatTensor(class_weights)
-    print(f"Class weights: {class_weights_tensor}")
 
     # Initialize tokenizer
     print(f"\nLoading tokenizer: {args.model_name}")
@@ -275,8 +259,8 @@ def main(args):
     model = ReviewClassifier(args.model_name, dropout=args.dropout)
     model.to(device)
 
-    # Loss functions with class weights
-    stars_criterion = nn.CrossEntropyLoss(weight=class_weights_tensor.to(device))
+    # Loss functions
+    stars_criterion = nn.CrossEntropyLoss()
     reply_criterion = nn.BCEWithLogitsLoss()
 
     # Optimizer and scheduler
@@ -380,7 +364,7 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='Train ReviewGPT V1+ classifier with DistilBERT',
+        description='Train ReviewGPT V1 classifier with DistilBERT',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
 
@@ -388,7 +372,7 @@ if __name__ == '__main__':
                         help='Directory to save model and metrics')
     parser.add_argument('--model_name', type=str, default='distilbert-base-multilingual-cased',
                         help='Pretrained model name')
-    parser.add_argument('--max_length', type=int, default=256,
+    parser.add_argument('--max_length', type=int, default=128,
                         help='Maximum sequence length')
     parser.add_argument('--batch_size', type=int, default=16,
                         help='Batch size')
