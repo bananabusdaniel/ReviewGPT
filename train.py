@@ -28,7 +28,9 @@ import torch.nn as nn
 from sklearn.metrics import (accuracy_score, confusion_matrix, f1_score,
                               mean_absolute_error, precision_recall_fscore_support,
                               roc_auc_score)
+from sklearn.utils.class_weight import compute_class_weight
 from torch.utils.data import DataLoader, Dataset
+from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 from transformers import (AutoModel, AutoTokenizer, get_linear_schedule_with_warmup)
 
@@ -68,9 +70,15 @@ class ReviewDataset(Dataset):
 
 
 class ReviewClassifier(nn.Module):
-    """Multi-task classifier with two heads on DistilBERT."""
+    """Multi-task classifier with two heads on BERT-base-multilingual-cased.
 
-    def __init__(self, model_name="distilbert-base-multilingual-cased", dropout=0.3):
+    V2 Improvements:
+    - Deeper classification heads (3 layers instead of 2)
+    - Mean pooling instead of just [CLS] token
+    - Reduced dropout (0.2 vs 0.3) for more capacity
+    """
+
+    def __init__(self, model_name="bert-base-multilingual-cased", dropout=0.2):
         super().__init__()
         self.bert = AutoModel.from_pretrained(model_name)
         hidden = self.bert.config.hidden_size
@@ -175,7 +183,10 @@ def train_epoch(model, dataloader, optimizer, scheduler, device, scaler,
 
 
 def evaluate(model, dataloader, device):
-    """Evaluate the model."""
+    """Evaluate the model with per-class metrics.
+
+    V2 Improvement: Added per-class accuracy for star ratings
+    """
     model.eval()
 
     all_stars_preds = []
@@ -235,7 +246,8 @@ def evaluate(model, dataloader, device):
         'stars': {
             'accuracy': accuracy_score(stars_labels_original, stars_preds_original),
             'mae': mean_absolute_error(stars_labels_original, stars_preds_original),
-            'loss': total_stars_loss / len(dataloader)
+            'loss': total_stars_loss / len(dataloader),
+            'per_class_accuracy': per_class_accuracy  # V2: New metric
         },
         'needs_reply': {
             'accuracy': accuracy_score(all_reply_labels, all_reply_preds),
@@ -316,16 +328,24 @@ def main(args):
     model = ReviewClassifier(args.model_name, dropout=args.dropout)
     model.to(device)
 
+    # V2: Initialize loss functions with class weights
+    stars_criterion = nn.CrossEntropyLoss(weight=class_weights_tensor.to(device))
+    reply_criterion = nn.BCEWithLogitsLoss()
+
     # Initialize optimizer and scheduler
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=0.01)
 
-    total_steps = len(train_loader) * args.num_epochs
+    # V2: Adjust total steps for gradient accumulation
+    total_steps = (len(train_loader) // args.accumulation_steps) * args.num_epochs
     warmup_steps = int(0.1 * total_steps)
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
         num_warmup_steps=warmup_steps,
         num_training_steps=total_steps
     )
+
+    # V2: Initialize gradient scaler for mixed precision
+    scaler = GradScaler()
 
     # Training loop
     best_val_f1 = 0
@@ -337,8 +357,12 @@ def main(args):
         print(f"Epoch {epoch + 1}/{args.num_epochs}")
         print(f"{'='*80}")
 
-        # Train
-        train_loss = train_epoch(model, train_loader, optimizer, scheduler, device)
+        # Train with V2 improvements
+        train_loss = train_epoch(
+            model, train_loader, optimizer, scheduler, device, scaler,
+            stars_criterion, reply_criterion,
+            accumulation_steps=args.accumulation_steps
+        )
         print(f"Average training loss: {train_loss:.4f}")
 
         # Validate
@@ -398,9 +422,18 @@ def main(args):
     print(conf_matrix)
 
     # Save metrics
+    # V2: Handle per_class_accuracy separately as it's a dict
+    stars_metrics = {k: (float(v) if not isinstance(v, dict) else v)
+                     for k, v in test_metrics['stars'].items()}
+    # Convert per_class_accuracy values to float
+    if 'per_class_accuracy' in stars_metrics:
+        stars_metrics['per_class_accuracy'] = {
+            int(k): float(v) for k, v in stars_metrics['per_class_accuracy'].items()
+        }
+
     metrics_output = {
         'test_metrics': {
-            'stars': {k: float(v) for k, v in test_metrics['stars'].items()},
+            'stars': stars_metrics,
             'needs_reply': {k: float(v) for k, v in test_metrics['needs_reply'].items()}
         },
         'confusion_matrix': conf_matrix.tolist(),
