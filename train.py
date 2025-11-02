@@ -1,8 +1,19 @@
 """
-Training script for ReviewGPT multi-task classification model.
-Uses DistilBERT with two classification heads for:
+Training script for ReviewGPT multi-task classification model V2.
+Uses BERT-base-multilingual-cased with two classification heads for:
 1. Star rating prediction (1-5)
 2. Needs reply prediction (binary)
+
+V2 Improvements:
+- Upgraded to BERT-base (110M params vs DistilBERT 66M params)
+- Increased max_length to 256 (from 128)
+- Deeper classification heads (3 layers vs 2)
+- Mean pooling instead of [CLS] token only
+- Class weights for balanced training
+- Gradient accumulation for larger effective batch size
+- Mixed precision training (FP16)
+- Per-class metrics for better analysis
+- More epochs with longer patience
 """
 
 import argparse
@@ -25,7 +36,7 @@ from transformers import (AutoModel, AutoTokenizer, get_linear_schedule_with_war
 class ReviewDataset(Dataset):
     """PyTorch Dataset for app reviews."""
 
-    def __init__(self, texts, stars, needs_reply, tokenizer, max_length=128):
+    def __init__(self, texts, stars, needs_reply, tokenizer, max_length=256):
         self.texts = texts
         self.stars = stars
         self.needs_reply = needs_reply
