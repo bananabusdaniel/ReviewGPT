@@ -1,6 +1,8 @@
 """
-CLI inference script for ReviewGPT.
+CLI inference script for ReviewGPT V2.
 Loads trained model and predicts star rating and needs_reply for review text.
+
+Compatible with both V1 (DistilBERT) and V2 (BERT-base) models.
 """
 
 import argparse
@@ -45,7 +47,7 @@ def predict(text, model, tokenizer, device, max_length=256):
         model: Trained ReviewClassifier
         tokenizer: Tokenizer
         device: torch device
-        max_length: Maximum sequence length
+        max_length: Maximum sequence length (V2 default: 256)
 
     Returns:
         Dictionary with predictions and confidence scores
@@ -92,9 +94,11 @@ def main(args):
     print(f"Using device: {device}\n")
 
     # Load tokenizer
+    # Try to load from checkpoint directory first, fallback to V2 default
     tokenizer_path = os.path.dirname(args.checkpoint)
-    if not os.path.exists(tokenizer_path):
-        tokenizer_path = 'distilbert-base-multilingual-cased'
+    if not os.path.exists(tokenizer_path) or not os.path.exists(os.path.join(tokenizer_path, 'tokenizer_config.json')):
+        tokenizer_path = 'bert-base-multilingual-cased'  # V2 default
+        print(f"No tokenizer found in checkpoint directory, using default: {tokenizer_path}")
 
     print(f"Loading tokenizer from {tokenizer_path}...")
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
@@ -127,7 +131,8 @@ def main(args):
     print(review_text)
     print(f"{'='*80}\n")
 
-    result = predict(review_text, model, tokenizer, device)
+    # V2: Use max_length=256 by default (can be overridden if needed)
+    result = predict(review_text, model, tokenizer, device, max_length=256)
 
     # Output results
     if args.output_format == 'json':
@@ -152,7 +157,7 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='ReviewGPT: Predict star rating and reply necessity for app reviews',
+        description='ReviewGPT V2: Predict star rating and reply necessity for app reviews',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -167,6 +172,9 @@ Examples:
 
   # Output as JSON
   python main.py --checkpoint artifacts/model.pt --text "Great app!" --output-format json
+
+Note: V2 models use BERT-base-multilingual-cased with max_length=256
+      V1 models use DistilBERT with max_length=128
         """
     )
 
