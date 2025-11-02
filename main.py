@@ -36,7 +36,7 @@ def load_model(checkpoint_path, device):
     return model
 
 
-def predict(text, model, tokenizer, device, max_length=128):
+def predict(text, model, tokenizer, device, max_length=256):
     """
     Predict star rating and needs_reply for a single review.
 
