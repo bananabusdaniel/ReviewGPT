@@ -308,53 +308,34 @@ def evaluate(model, dataloader, device, stars_reg_criterion):
 
 
 def main(args):
-    # Set random seeds for reproducibility
+    # Set random seeds
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    # Create artifacts directory
+    # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # Load data from pre-split files
     print("=" * 80)
-    print("REVIEWGPT V2.1 TRAINING")
+    print("REVIEWGPT V1+ TRAINING")
     print("=" * 80)
-    print("\nV2.1 Improvements (Best of V1 + V2):")
+    print("\nV1+ (Simple & Effective):")
     print("  - DistilBERT-base-multilingual-cased (66M params)")
-    print("  - max_length: 128 tokens")
-    print("  - Dropout: 0.35 (combat overfitting)")
-    print("  - Ordinal regression head (weight: 0.8)")
-    print("  - Manual 3-star class weight boost (2.0x)")
-    print("  - Combined metric early stopping")
-    print("  - Deeper classification heads (3 layers)")
-    print("  - Mean pooling")
-    print("  - Gradient accumulation (effective batch = 32)")
-    print("  - Mixed precision training (FP16)")
-    print("  - Per-class metrics")
+    print("  - Max length: 256 tokens")
+    print("  - Class weights for balanced training")
+    print("  - Simple 2-layer heads")
+    print("  - [CLS] token pooling")
     print("=" * 80)
 
-    print("\nLoading data from pre-split files...")
+    # Load data
+    print("\nLoading data...")
     train_df = pd.read_csv('reviews-train.csv')
     val_df = pd.read_csv('reviews-validate.csv')
     test_df = pd.read_csv('reviews-test.csv')
-
     print(f"Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)}")
 
-    # Verify data integrity
-    print(f"\nTrain set stars distribution:")
-    print(train_df['stars'].value_counts().sort_index())
-    print(f"\nValidate set stars distribution:")
-    print(val_df['stars'].value_counts().sort_index())
-    print(f"\nTest set stars distribution:")
-    print(test_df['stars'].value_counts().sort_index())
-
-    # V2.1: Manual class weights with heavy 3-star boost
-    print("\n" + "=" * 80)
-    print("Computing class weights for balanced training...")
-    print("=" * 80)
-
-    # First compute sklearn balanced weights as reference
-    sklearn_weights = compute_class_weight(
+    # Compute class weights
+    print("\nComputing class weights...")
+    class_weights = compute_class_weight(
         'balanced',
         classes=np.unique(train_df['stars']),
         y=train_df['stars']
