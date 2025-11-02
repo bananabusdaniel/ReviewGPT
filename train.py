@@ -75,22 +75,28 @@ class ReviewClassifier(nn.Module):
         self.bert = AutoModel.from_pretrained(model_name)
         hidden = self.bert.config.hidden_size
 
-        # Star rating head (5-class classification)
+        # Star rating head (5-class classification) - DEEPER
         self.star_head = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(hidden, hidden // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden // 2, 5)
+            nn.Linear(hidden // 2, hidden // 4),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden // 4, 5)
         )
 
-        # Needs reply head (binary classification)
+        # Needs reply head (binary classification) - DEEPER
         self.reply_head = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(hidden, hidden // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden // 2, 1)
+            nn.Linear(hidden // 2, hidden // 4),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden // 4, 1)
         )
 
     def forward(self, input_ids, attention_mask):
