@@ -389,24 +389,29 @@ def main(args):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Train ReviewGPT classifier')
+    parser = argparse.ArgumentParser(
+        description='Train ReviewGPT V2 classifier with BERT-base',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
 
     parser.add_argument('--output_dir', type=str, default='artifacts',
                         help='Directory to save model and metrics')
-    parser.add_argument('--model_name', type=str, default='distilbert-base-multilingual-cased',
-                        help='Pretrained model name')
-    parser.add_argument('--max_length', type=int, default=128,
-                        help='Maximum sequence length')
+    parser.add_argument('--model_name', type=str, default='bert-base-multilingual-cased',
+                        help='Pretrained model name (V2 uses BERT-base)')
+    parser.add_argument('--max_length', type=int, default=256,
+                        help='Maximum sequence length (V2: 256 vs V1: 128)')
     parser.add_argument('--batch_size', type=int, default=16,
-                        help='Batch size')
-    parser.add_argument('--num_epochs', type=int, default=5,
-                        help='Number of epochs')
-    parser.add_argument('--learning_rate', type=float, default=2e-5,
-                        help='Learning rate')
-    parser.add_argument('--dropout', type=float, default=0.3,
-                        help='Dropout rate')
-    parser.add_argument('--patience', type=int, default=3,
-                        help='Early stopping patience')
+                        help='Batch size per GPU')
+    parser.add_argument('--accumulation_steps', type=int, default=2,
+                        help='Gradient accumulation steps (effective batch = batch_size * accumulation_steps)')
+    parser.add_argument('--num_epochs', type=int, default=10,
+                        help='Number of epochs (V2: 10 vs V1: 5)')
+    parser.add_argument('--learning_rate', type=float, default=3e-5,
+                        help='Learning rate (V2: 3e-5 vs V1: 2e-5)')
+    parser.add_argument('--dropout', type=float, default=0.2,
+                        help='Dropout rate (V2: 0.2 vs V1: 0.3)')
+    parser.add_argument('--patience', type=int, default=5,
+                        help='Early stopping patience (V2: 5 vs V1: 3)')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')
 
