@@ -195,6 +195,16 @@ def evaluate(model, dataloader, device):
     stars_preds_original = np.array(all_stars_preds) + 1  # Convert back to 1-5
     stars_labels_original = np.array(all_stars_labels) + 1
 
+    # V2: Calculate per-class accuracy
+    per_class_accuracy = {}
+    for star_rating in range(1, 6):
+        mask = stars_labels_original == star_rating
+        if mask.sum() > 0:
+            per_class_accuracy[star_rating] = accuracy_score(
+                stars_labels_original[mask],
+                stars_preds_original[mask]
+            )
+
     metrics = {
         'stars': {
             'accuracy': accuracy_score(stars_labels_original, stars_preds_original),
