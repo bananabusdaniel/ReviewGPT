@@ -38,6 +38,10 @@ echo "Great app but needs dark mode" > review.txt
 python main.py --checkpoint artifacts/model.pt --file review.txt
 ```
 
+#### 3a. Locate and add model.pt to /artificats
+
+https://drive.google.com/file/d/1jOaEkfDj2kQB__U0qjUBJbet9i-uaQe3/view?usp=sharing
+
 #### 4. JSON Output
 ```bash
 python main.py --checkpoint artifacts/model.pt \
