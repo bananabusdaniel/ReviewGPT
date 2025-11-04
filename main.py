@@ -1,8 +1,8 @@
 """
-CLI inference script for ReviewGPT V2.
+CLI inference script for ReviewGPT V1.
 Loads trained model and predicts star rating and needs_reply for review text.
 
-Compatible with both V1 (DistilBERT) and V2 (BERT-base) models.
+Uses DistilBERT-base-multilingual-cased with max_length=128.
 """
 
 import argparse
@@ -38,7 +38,7 @@ def load_model(checkpoint_path, device):
     return model
 
 
-def predict(text, model, tokenizer, device, max_length=256):
+def predict(text, model, tokenizer, device, max_length=128):
     """
     Predict star rating and needs_reply for a single review.
 
@@ -47,7 +47,7 @@ def predict(text, model, tokenizer, device, max_length=256):
         model: Trained ReviewClassifier
         tokenizer: Tokenizer
         device: torch device
-        max_length: Maximum sequence length (V2 default: 256)
+        max_length: Maximum sequence length (V1 default: 128)
 
     Returns:
         Dictionary with predictions and confidence scores
@@ -94,10 +94,10 @@ def main(args):
     print(f"Using device: {device}\n")
 
     # Load tokenizer
-    # Try to load from checkpoint directory first, fallback to V2 default
+    # Try to load from checkpoint directory first, fallback to V1 default
     tokenizer_path = os.path.dirname(args.checkpoint)
     if not os.path.exists(tokenizer_path) or not os.path.exists(os.path.join(tokenizer_path, 'tokenizer_config.json')):
-        tokenizer_path = 'bert-base-multilingual-cased'  # V2 default
+        tokenizer_path = 'distilbert-base-multilingual-cased'  # V1 default
         print(f"No tokenizer found in checkpoint directory, using default: {tokenizer_path}")
 
     print(f"Loading tokenizer from {tokenizer_path}...")
@@ -116,9 +116,9 @@ def main(args):
         with open(args.file, 'r', encoding='utf-8') as f:
             review_text = f.read().strip()
     else:
-        # Interactive mode
-        print("Enter review text (Ctrl+D or Ctrl+Z when done):")
-        review_text = sys.stdin.read().strip()
+        # Interactive mode - simple input prompt
+        print("\nEnter your review:")
+        review_text = input("> ").strip()
 
     if not review_text:
         print("Error: No review text provided")
@@ -131,8 +131,8 @@ def main(args):
     print(review_text)
     print(f"{'='*80}\n")
 
-    # V2: Use max_length=256 by default (can be overridden if needed)
-    result = predict(review_text, model, tokenizer, device, max_length=256)
+    # V1: Use max_length=128
+    result = predict(review_text, model, tokenizer, device, max_length=128)
 
     # Output results
     if args.output_format == 'json':
@@ -157,29 +157,28 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='ReviewGPT V2: Predict star rating and reply necessity for app reviews',
+        description='ReviewGPT V1: Predict star rating and reply necessity for app reviews',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Interactive mode (prompts for input)
+  python main.py --checkpoint artifacts/model.pt
+
   # Predict from command line
-  python main.py --checkpoint artifacts/model.pt --text "האפליקציה קורסת כל הזמן"
+  python main.py --checkpoint artifacts/model.pt --text "App crashes constantly"
 
   # Predict from file
   python main.py --checkpoint artifacts/model.pt --file review.txt
 
-  # Interactive mode
-  python main.py --checkpoint artifacts/model.pt
-
   # Output as JSON
   python main.py --checkpoint artifacts/model.pt --text "Great app!" --output-format json
 
-Note: V2 models use BERT-base-multilingual-cased with max_length=256
-      V1 models use DistilBERT with max_length=128
+Note: V1 uses DistilBERT-base-multilingual-cased with max_length=128
         """
     )
 
-    parser.add_argument('--checkpoint', type=str, required=True,
-                        help='Path to model checkpoint (.pt file)')
+    parser.add_argument('--checkpoint', type=str, default='artifacts/model.pt',
+                        help='Path to model checkpoint (.pt file) (default: artifacts/model.pt)')
     parser.add_argument('--text', type=str,
                         help='Review text to classify')
     parser.add_argument('--file', type=str,
