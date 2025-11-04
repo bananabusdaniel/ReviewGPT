@@ -1,0 +1,66 @@
+{
+  "test_metrics": {
+    "stars": {
+      "accuracy": 0.5065616797900262,
+      "mae": 0.6229221347331584,
+      "loss": 1.157203283574846
+    },
+    "needs_reply": {
+      "accuracy": 0.7891513560804899,
+      "precision": 0.8318695106649937,
+      "recall": 0.861038961038961,
+      "f1": 0.8462029355456286,
+      "roc_auc": 0.838034887364646,
+      "loss": 0.4852326096345981
+    }
+  },
+  "confusion_matrix": [
+    [
+      121,
+      92,
+      19,
+      2,
+      4
+    ],
+    [
+      53,
+      112,
+      48,
+      10,
+      5
+    ],
+    [
+      19,
+      62,
+      69,
+      28,
+      8
+    ],
+    [
+      6,
+      21,
+      51,
+      98,
+      73
+    ],
+    [
+      3,
+      5,
+      14,
+      41,
+      179
+    ]
+  ],
+  "best_epoch": 2,
+  "hyperparameters": {
+    "output_dir": "artifacts",
+    "model_name": "distilbert-base-multilingual-cased",
+    "max_length": 256,
+    "batch_size": 16,
+    "num_epochs": 5,
+    "learning_rate": 2e-05,
+    "dropout": 0.3,
+    "patience": 3,
+    "seed": 42
+  }
+}
